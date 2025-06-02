@@ -33,9 +33,9 @@ link-checker.py /path/to/docs/content --interactive
 
 Interactive mode lets you do one of the following for each of the broken links or anchors detected:
 
-a) choose one of the suggestions to apply it.
-b) Mark the link as BROKEN_ANCHOR or BROKEN_LINK depending what the issue is. This is added as tooltip-style syntax, so `[foo](/bad/link)` becomes `[foo](/bad/link "BROKEN_LINK")`.
-c) skip
+1. choose one of the suggestions to apply it.
+2. Mark the link as BROKEN_ANCHOR or BROKEN_LINK depending what the issue is. This is added as tooltip-style syntax, so `[foo](/bad/link)` becomes `[foo](/bad/link "BROKEN_LINK")`.
+3. skip
 
 You can then `vim $(grep -riE "BROKEN_LINK|BROKEN_ANCHOR")` or w/e and fix them manually.
 
