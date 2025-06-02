@@ -2,7 +2,7 @@
 
 Mostly related to docs management
 
-### `link-checker.py`
+### internal-link-checker.py
 
 Check for broken internal links & anchor links, suggest fuzzily-matched corrections.
 
@@ -16,19 +16,19 @@ Python libs:
 Print a report of broken links & anchor links to the terminal:
 
 ```sh
-link-checker.py /path/to/docs/content
+internal-link-checker.py /path/to/docs/content
 ```
 
 Output to a csv file instead:
 
 ```sh
-link-checker.py /path/to/docs/content --csv report.csv
+internal-link-checker.py /path/to/docs/content --csv report.csv
 ```
 
 Interactive mode:
 
 ```sh
-link-checker.py /path/to/docs/content --interactive
+internal-link-checker.py /path/to/docs/content --interactive
 ```
 
 Interactive mode lets you do one of the following for each of the broken links or anchors detected:
