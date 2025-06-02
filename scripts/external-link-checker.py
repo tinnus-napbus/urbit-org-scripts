@@ -93,35 +93,39 @@ def main():
             print("Error: Missing filename after --csv")
             sys.exit(1)
 
-    print(f"🔍 Scanning Markdown files in: {base_dir}\n")
+    print(f"\U0001F50D Scanning Markdown files in: {base_dir}\n")
 
     markdown_files = collect_markdown_files(base_dir)
     all_links = []
+    link_sources = []
     for md_file in markdown_files:
         links = extract_external_links(md_file)
         for link in links:
-            all_links.append((md_file, link))
+            all_links.append(link)
+            link_sources.append((md_file, link))
 
-    total = len(all_links)
-    checked = [None] * total
-    broken_links = []
+    unique_links = list(set(all_links))
+    link_status = {}
+    total = len(unique_links)
 
-    def worker(index_link):
-        i, (md_file, link) = index_link
-        url, ok, status = check_link(link)
-        checked[i] = (md_file, link, ok, status)
-        return i, link
+    def worker(index_url):
+        i, url = index_url
+        result = check_link(url)
+        link_status[url] = result[1:]  # (ok, status)
+        return i, url
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = {executor.submit(worker, (i, item)): i for i, item in enumerate(all_links)}
+        futures = {executor.submit(worker, (i, url)): i for i, url in enumerate(unique_links)}
         for count, future in enumerate(concurrent.futures.as_completed(futures), 1):
-            i, link = future.result()
-            print_progress(count, total, link, quiet)
+            i, url = future.result()
+            print_progress(count, total, url, quiet)
 
     if not quiet:
         print()
 
-    for md_file, link, ok, status in checked:
+    broken_links = []
+    for md_file, link in link_sources:
+        ok, status = link_status.get(link, (True, 200))
         if not ok:
             broken_links.append((str(md_file.relative_to(base_dir)), link, status))
 
@@ -131,14 +135,14 @@ def main():
             writer.writerow(["source_file", "broken_link", "http_status"])
             for item in broken_links:
                 writer.writerow(item)
-        print(f"✅ CSV report written to: {csv_output}")
+        print(f"\u2705 CSV report written to: {csv_output}")
     else:
         if broken_links:
-            print("❌ Broken External Links:\n")
+            print("\u274C Broken External Links:\n")
             for source_file, link, status in broken_links:
                 print(f"- In '{source_file}': {link} (status: {status})")
         else:
-            print("✅ No broken external links found.")
+            print("\u2705 No broken external links found.")
 
 if __name__ == "__main__":
     main()
