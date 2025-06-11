@@ -26,6 +26,7 @@ def print_usage():
 # === Patterns ===
 LINK_PATTERN = re.compile(r'(?<!\!)\[.*?\]\((.*?)\)')
 HEADING_PATTERN = re.compile(r'^(#{1,6})\s+(.+?)(?:\s+\{#([a-zA-Z0-9\-_]+)\})?\s*$')
+HTML_ANCHOR_PATTERN = re.compile(r'<a\s+[^>]*id=["\']([a-zA-Z0-9\-_]+)["\'][^>]*>', re.IGNORECASE)
 
 # === Utilities ===
 def collect_markdown_files(base_dir):
@@ -67,24 +68,34 @@ def extract_anchors_from_file(filepath):
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             for line in f:
-                match = HEADING_PATTERN.match(line)
-                if match:
-                    _, heading_text, custom_anchor = match.groups()
+                heading_match = HEADING_PATTERN.match(line)
+                if heading_match:
+                    _, heading_text, custom_anchor = heading_match.groups()
                     if custom_anchor:
                         anchors.add(custom_anchor)
                     else:
                         anchors.add(generate_anchor(heading_text))
+                for html_anchor in HTML_ANCHOR_PATTERN.findall(line):
+                    anchors.add(html_anchor)
     except Exception:
         print(f"Warning: could not read file {filepath}", file=sys.stderr)
     return anchors
 
 def suggest_fixes(broken_link, valid_paths, from_file, base_path):
     from_path = (base_path / from_file).parent
-    suggestions = process.extract(broken_link, valid_paths, scorer=fuzz.ratio, limit=3)
+    link_path = strip_fragment(broken_link)
+    fragment = extract_fragment(broken_link)
+    suggestions = process.extract(link_path, valid_paths, scorer=fuzz.ratio, limit=3)
     rel_suggestions = []
     for candidate, score, _ in suggestions:
         abs_candidate = base_path / candidate
         rel_path = os.path.relpath(abs_candidate, from_path).replace("\\", "/")
+        if fragment:
+            anchors = extract_anchors_from_file(abs_candidate)
+            if anchors:
+                best_match = process.extractOne(fragment, anchors, scorer=fuzz.ratio)
+                if best_match:
+                    rel_path += f"#{best_match[0]}"
         rel_suggestions.append((rel_path, score))
     return rel_suggestions
 
@@ -123,7 +134,7 @@ def find_broken_files(base_path, valid_paths):
             if is_valid:
                 all_links[(md_file, link)] = resolved_path
             else:
-                suggestions = suggest_fixes(link_no_anchor, valid_paths, md_file, base_path)
+                suggestions = suggest_fixes(link, valid_paths, md_file, base_path)
                 broken.append((md_file, link, "broken_link", suggestions))
 
     return broken, all_links
@@ -137,7 +148,6 @@ def find_broken_anchors(all_links, base_path):
         anchors = extract_anchors_from_file(resolved_path)
         if fragment not in anchors:
             suggestions = process.extract(fragment, anchors, scorer=fuzz.ratio, limit=3)
-            # Prepend '#' to anchor suggestions for CSV
             suggestions = [(f"#{anchor}", score, _) for anchor, score, _ in suggestions]
             broken.append((source_file, full_link, "broken_anchor", suggestions))
     return broken
@@ -153,29 +163,15 @@ def write_csv(output_path, broken_items):
             suggestion_texts = [text for text, *_ in suggestions]
             row = [source_file, broken_link, issue_type] + suggestion_texts
             writer.writerow(row)
-          
+
 # === Interactive Fix ===
 def prompt_and_fix_interactively(base_path, issues):
-    def normalize_path_for_display(s, issue_type, score):
-        if issue_type == "broken_anchor":
-            return f"{MAGENTA}{s}{RESET} ({score:.1f}%)"
-        if s.endswith("README.md"):
-            return f"{CYAN}{os.path.dirname(s).rstrip('/')}{RESET} ({score:.1f}%)"
-        return f"{CYAN}{s}{RESET} ({score:.1f}%)"
-
-    def normalize_path_for_replacement(s, issue_type):
-        if issue_type == "broken_anchor":
-            return s
-        if s.endswith("README.md"):
-            return os.path.dirname(s).rstrip("/")
-        return s
-
     try:
         for source_file, broken_link, issue_type, suggestions in issues:
             print(f"\n🔧 {BOLD}File:{RESET} {BLUE}{source_file}{RESET}")
             label = "Broken anchor:" if issue_type == "broken_anchor" else "Broken link:"
-            broken_color = MAGENTA if issue_type == "broken_anchor" else YELLOW
-            print(f"   {label} {broken_color}{broken_link}{RESET}")
+            color = MAGENTA if issue_type == "broken_anchor" else YELLOW
+            print(f"   {label} {color}{broken_link}{RESET}")
 
             if not suggestions:
                 print("   No suggestions available. Skipping.")
@@ -183,8 +179,7 @@ def prompt_and_fix_interactively(base_path, issues):
 
             print("   Suggestions:")
             for idx, (sugg, score, *_) in enumerate(suggestions, 1):
-                display = normalize_path_for_display(sugg, issue_type, score)
-                print(f"     {idx}. {display}")
+                print(f"     {idx}. {CYAN}{sugg}{RESET} ({score:.1f}%)")
 
             while True:
                 choice = input("   Choose a fix (1-3), S to skip, or F to flag as broken: ").strip().lower()
@@ -200,21 +195,12 @@ def prompt_and_fix_interactively(base_path, issues):
                     content = f.read()
 
                 if choice == "f":
-                    # Add tooltip after link to mark as broken
-                    escaped_link = re.escape(broken_link)
                     marker = "BROKEN_ANCHOR" if issue_type == "broken_anchor" else "BROKEN_LINK"
+                    escaped_link = re.escape(broken_link)
                     new_content = re.sub(rf'(\[([^\]]+?)\]\({escaped_link})(\))', rf'\1 "{marker}"\3', content)
                     print(f"   ⚠️  Link marked as {marker.lower().replace('_', ' ')}.")
                 else:
-                    raw_selected = suggestions[int(choice) - 1][0]
-                    selected = normalize_path_for_replacement(raw_selected, issue_type)
-
-                    if issue_type == "broken_anchor":
-                        base = strip_fragment(broken_link)
-                        replacement = f"{base}{selected}"
-                    else:
-                        replacement = selected
-
+                    replacement = suggestions[int(choice) - 1][0]
                     escaped_link = re.escape(broken_link)
                     new_content = re.sub(rf'\[([^\]]+?)\]\({escaped_link}\)', rf'[\1]({replacement})', content)
                     print("   ✅ Link updated.")
@@ -273,8 +259,6 @@ def main():
             if suggestions:
                 print("   Suggestions:")
                 for rel_path, score in suggestions:
-                    if rel_path.endswith("README.md"):
-                        rel_path = os.path.dirname(rel_path).rstrip("/")
                     print(f"     • {CYAN}{rel_path}{RESET} ({score:.1f}%)")
             print()
     else:
