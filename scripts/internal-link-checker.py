@@ -201,6 +201,12 @@ def prompt_and_fix_interactively(base_path, issues):
                     print(f"   ⚠️  Link marked as {marker.lower().replace('_', ' ')}.")
                 else:
                     replacement = suggestions[int(choice) - 1][0]
+                    base = strip_fragment(broken_link)
+                    fragment = extract_fragment(replacement)
+                    if fragment:
+                        replacement = f"{base}#{fragment}"
+                    else:
+                        replacement = base
                     escaped_link = re.escape(broken_link)
                     new_content = re.sub(rf'\[([^\]]+?)\]\({escaped_link}\)', rf'[\1]({replacement})', content)
                     print("   ✅ Link updated.")
