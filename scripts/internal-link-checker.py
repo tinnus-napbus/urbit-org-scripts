@@ -85,24 +85,54 @@ def suggest_fixes(broken_link, valid_paths, from_file, base_path):
     from_path = (base_path / from_file).parent
     link_path = strip_fragment(broken_link)
     fragment = extract_fragment(broken_link)
-    suggestions = process.extract(link_path, valid_paths, scorer=fuzz.ratio, limit=3)
+
+    # Convert broken link to absolute path then root-relative
+    abs_link_path = (from_path / link_path).resolve()
+    try:
+        root_relative_link = str(abs_link_path.relative_to(base_path)).replace("\\", "/")
+    except Exception:
+        root_relative_link = link_path  # fallback if not under base_path
+
+    # Include README.md directories as valid candidates
+    candidates = set(valid_paths)
+    for path in valid_paths:
+        if path.endswith("/README.md"):
+            dir_path = str((base_path / path).parent.relative_to(base_path)).replace("\\", "/")
+            candidates.add(dir_path)
+
+    # Fuzzy match against root-relative paths
+    suggestions = process.extract(root_relative_link, candidates, scorer=fuzz.ratio, limit=10)
     rel_suggestions = []
+
     for candidate, score, _ in suggestions:
         abs_candidate = base_path / candidate
-        rel_path = os.path.relpath(abs_candidate, from_path).replace("\\", "/")
-        if fragment:
-            anchors = extract_anchors_from_file(abs_candidate)
+
+        if abs_candidate.is_dir() and (abs_candidate / "README.md").exists():
+            target_file = abs_candidate / "README.md"
+            link_to = abs_candidate
+        else:
+            target_file = abs_candidate
+            link_to = abs_candidate
+
+        rel_path = os.path.relpath(link_to, from_path).replace("\\", "/")
+
+        if fragment and target_file.exists():
+            anchors = extract_anchors_from_file(target_file)
             if anchors:
                 best_match = process.extractOne(fragment, anchors, scorer=fuzz.ratio)
                 if best_match:
                     rel_path += f"#{best_match[0]}"
+
         rel_suggestions.append((rel_path, score))
+
     return rel_suggestions
 
 # === Broken Link Detection ===
 def find_broken_files(base_path, valid_paths):
     broken = []
-    all_links = {}
+    all_links = []
+
+    valid_set = set(valid_paths)
 
     for md_file in valid_paths:
         file_path = base_path / md_file
@@ -111,33 +141,35 @@ def find_broken_files(base_path, valid_paths):
         for link in links:
             link_no_anchor = strip_fragment(link)
             fragment = extract_fragment(link)
-
-            try:
-                resolved_path = (file_path.parent / link_no_anchor).resolve()
-                relative_resolved = resolved_path.relative_to(base_path)
-                normalized = str(relative_resolved).replace("\\", "/")
-            except Exception:
-                resolved_path = None
-                normalized = None
-
+            resolved_path = (file_path.parent / link_no_anchor).resolve()
+            normalized = None
             is_valid = False
-            if normalized in valid_paths:
-                is_valid = True
-            elif resolved_path and resolved_path.is_dir():
-                if (resolved_path / "README.md").exists():
+
+            if resolved_path.exists():
+                try:
+                    relative_resolved = resolved_path.relative_to(base_path)
+                    normalized = str(relative_resolved).replace("\\", "/")
+                except Exception:
+                    pass
+
+                if normalized in valid_set:
+                    is_valid = True
+                elif resolved_path.is_dir() and (resolved_path / "README.md").exists():
                     is_valid = True
                     resolved_path = resolved_path / "README.md"
                     normalized = str(resolved_path.relative_to(base_path)).replace("\\", "/")
-            elif resolved_path and resolved_path.exists():
+            elif resolved_path.is_dir() and (resolved_path / "README.md").exists():
+                resolved_path = resolved_path / "README.md"
+                normalized = str(resolved_path.relative_to(base_path)).replace("\\", "/")
                 is_valid = True
 
             if is_valid:
-                all_links[(md_file, link)] = resolved_path
+                all_links.append(((md_file, link), resolved_path))
             else:
                 suggestions = suggest_fixes(link, valid_paths, md_file, base_path)
                 broken.append((md_file, link, "broken_link", suggestions))
 
-    return broken, all_links
+    return broken, dict(all_links)
 
 def find_broken_anchors(all_links, base_path):
     broken = []
@@ -147,7 +179,7 @@ def find_broken_anchors(all_links, base_path):
             continue
         anchors = extract_anchors_from_file(resolved_path)
         if fragment not in anchors:
-            suggestions = process.extract(fragment, anchors, scorer=fuzz.ratio, limit=3)
+            suggestions = process.extract(fragment, anchors, scorer=fuzz.ratio, limit=10)
             suggestions = [(f"#{anchor}", score, _) for anchor, score, _ in suggestions]
             broken.append((source_file, full_link, "broken_anchor", suggestions))
     return broken
@@ -182,8 +214,8 @@ def prompt_and_fix_interactively(base_path, issues):
                 print(f"     {idx}. {CYAN}{sugg}{RESET} ({score:.1f}%)")
 
             while True:
-                choice = input("   Choose a fix (1-3), S to skip, or F to flag as broken: ").strip().lower()
-                if choice in {"s", "f", "1", "2", "3"}:
+                choice = input("   Choose a fix (1–10), S to skip, or F to flag as broken: ").strip().lower()
+                if choice in {"s", "f"} or (choice.isdigit() and 1 <= int(choice) <= 10):
                     break
 
             if choice == "s":
